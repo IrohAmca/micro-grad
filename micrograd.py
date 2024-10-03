@@ -1,64 +1,146 @@
-#%%
 class Value:
-    def __init__(self, data, _children=(),_op=''):
-        self.data = data
+    def __init__(self, data, _children=(), _op='', no_grad=False):
+        self.data = data 
+        self.grad = 0
         self._prev = set(_children)
         self._op = _op
+        self._backward = lambda: None
+        self.no_grad = no_grad
+        self._e = 2.718281828459045
+    
+    def __call__(self):
+        return f"Value(data={self.data}, grad={self.grad})"
+    
     def __repr__(self):
-        return f"Value=(data={self.data})"
-
-    def __add__(self,value):
-        result = Value(self.data + value.data,(self,value),'+')
-        return result 
+        return self.data.__repr__()
     
-    def __mul__(self,value):
-        result = Value(self.data * value.data,(self,value), '*')
-        return result
-    
-    def __pow__(self,value):
-        if not isinstance(value, Value):
-            value = Value(value)
-        result = Value(self.data ** value.data, (self,value),'**')
-        return result
+    def __add__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data + value.data, (self, value), '+')
 
-
-from graphviz import Digraph
-
-def trace(root):
-    nodes, edges = set(), set()
-    def build(v):
-        if v not in nodes:
-            nodes.add(v)
-            for child in v._prev:
-                edges.add((child, v))
-                build(child)
-    build(root)
-    return nodes, edges
-
-def draw_dot(root):
-    dot = Digraph(format='svg',graph_attr={'rankdir':'TB'})
-    nodes, edges = trace(root)
-    for n in nodes:
-        uid = str(id(n))
-        dot.node(name=uid, label="{data %4f}" % n.data, shape='record')
-        if n._op:
-            dot.node(name=uid + n._op, label=n._op)
-            dot.edge(uid + n._op, uid)
+        if self.no_grad:
+            return result
         
+        def _backward():
+            self.grad += result.grad
+            value.grad += result.grad
+        
+        result._backward = _backward
+        
+        return result
+
+
+    def __sub__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data - value.data, (self, value), '-')
+        
+        if self.no_grad:
+            return result
+        
+        def _backward():
+            self.grad += 1 * result.grad
+            value.grad += -1 * result.grad
+            
+        result._backward = _backward
+        return result
     
-    for n1,n2 in edges:
-        dot.edge(str(id(n1)),str(id(n2))+ n2._op)
+    def __mul__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data * value.data, (self, value), '*')
+        
+        if self.no_grad:
+            return result
+        
+        def _backward():
+            self.grad += value.data * result.grad
+            value.grad += self.data * result.grad
+        result._backward = _backward
+        return result
     
-    return dot
+    def __pow__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data ** value.data, (self, value), 'f**{value}')
+        
+        def _backward():
+            self.grad += (value * self.data**(value-1)) * result.grad
+            
+        result._backward = _backward
+        
+        return result
+    
+    def __truediv__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data / value.data, (self, value), '/')
+        return result
+    
+    def _exp(self):
+        result = Value(self._e ** self.data, (self,))
+        return result
+        
+    def __neg__(self):
+        return Value(-self.data, (self,), '-')
+    
+    def __sqrt__(self):
+        return self ** 0.5
+        
+    def __lt__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data < value.data, (self, value), '<')
+        return result
+    
+    def __le__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data <= value.data, (self, value), '<=')
+        return result
+    
+    def __eq__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data == value.data, (self, value), '==')
+        return result
+    
+    def __hash__(self):
+        return hash(id(self))
+    
+    def __gt__(self, value):
+        value = value if isinstance(value, Value) else Value(value)
+        result = Value(self.data > value.data, (self, value), '>')
+        return result
+    
+    def __radd__(self, value):
+        return self.__add__(value)
+    
+    def relu(self):
+        result = Value(self.data if self.data > 0 else 0, (self,), 'ReLU')
 
-a = Value(2.0)
-b = Value(4.0)
-d = Value(-2.0)
-c = a + b * d**2
-print(c)
+        def _backward():
+            self.grad += (result.data > 0) * result.grad
 
-print(c._prev)
-print(c._op)
+        result._backward = _backward
+        return result
 
-draw_dot(c)
-# %%
+    def tanh(self):
+        e_pos = self._exp()
+        e_neg = (-self)._exp()
+        result = (e_pos - e_neg) / (e_pos + e_neg)
+        
+        def _backward():
+            self.grad += (1 - result.data ** 2) * result.grad
+            
+        result._backward = _backward
+        return result
+        
+    def backward(self):
+        topo = []
+        visited = set()
+
+        def build_topo(v):
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    build_topo(child)
+                topo.append(v)
+
+        self.grad = 1.0
+        build_topo(self)
+        for node in reversed(topo):
+            node._backward()
